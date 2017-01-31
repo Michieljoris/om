@@ -17,9 +17,14 @@
             [om.next.protocols :as p]
             [cljs.analyzer :as ana]
             [cljs.analyzer.api :as ana-api]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [clojure.pprint :refer [pprint]])
   #?(:clj  (:import [java.io Writer])
      :cljs (:import [goog.debug Console])))
+
+(def pp pprint)
+;; =============================================================================
+;; defui
 
 (defn collect-statics [dt]
   (letfn [(split-on-static [forms]
@@ -46,7 +51,17 @@
             (recur nil dt' statics)))
         {:dt dt' :statics statics}))))
 
-(defn- validate-statics [dt]
+
+;; (collect-statics '(defui Bla
+;;                     static field :a 1
+;;                     static IQuery
+;;                     (query [this] :foo)
+;;                     static Ident 
+;;                     Object
+;;                     (render [this] :bar)))
+;; => {:dt [defui Bla Object (render [this] :bar)], :statics {:fields {:a 1}, :protocols [IQuery (query [this] :foo) Ident]}}
+
+(defn- validate-statics [dt];
   (when-let [invalid (some #{"Ident" "IQuery" "IQueryParams"}
                        (map #(-> % str (str/split #"/") last)
                          (filter symbol? dt)))]
@@ -235,6 +250,9 @@
          (when-not (nil? indexer#)
            (om.next.protocols/drop-component! indexer# this#))))}})
 
+;; Takes dt seq and 'reshapes' existing react methods to om-next versions.
+;; Basically prepending code to passed in code. If react method isn't defined,
+;; adds default for a number of methods, see reshape method above..
 (defn reshape [dt {:keys [reshape defaults]}]
   (letfn [(reshape* [x]
             (if (and (sequential? x)
@@ -360,6 +378,12 @@
                                   :component-name ~(str name)}
                             ~class-methods)))))))
 
+;; This returns a piece of code that if executed defines a constructor function
+;; named name, and some more code to set prototype to make the function a
+;; constructor for a React component
+;; for specify! see:
+;; http://davedellacosta.com/cljs-protocols
+;; http://dev.clojure.org/display/design/specify+i.e.+reify+for+instances
 (defn defui*
   ([name form] (defui* name form nil))
   ([name forms env]
@@ -420,6 +444,10 @@
     (defui* name forms &env)
     #?(:clj (defui*-clj name forms))))
 
+;; (clojure.pprint/pprint (defui* Bla '(static Ident (ident [this] :foo)
+;;                                             static IQuery (query [this] bar)
+;;                                             static field foo "aaaaaaaaaaaaaaaaaaaaaaaaaa")))
+
 (defmacro ui
   [& forms]
   (let [t (with-meta (gensym "ui_") {:anonymous true})]
@@ -440,6 +468,8 @@
                  (str " (in function: `" ~fn-name "`)"))
                ": " ~message)))))))
 
+;; Kind of an assert that logs error on condition = false, and uses google console
+;; logger or configured logger. Logs fn where invariant fails if it can.
 (defmacro invariant
   [condition message]
   (when (boolean (:ns &env))
@@ -457,6 +487,7 @@
 ;; =============================================================================
 ;; CLJS
 
+;; If goog.DEBUG==true logs to console, and calls possible om.next logger
 #?(:cljs
    (defonce *logger*
      (when ^boolean goog.DEBUG
@@ -468,6 +499,8 @@
 
 (def ^:private roots (atom {}))
 (def ^{:dynamic true} *raf* nil)
+
+;; Rebound in render of component, see defui.
 (def ^{:dynamic true :private true} *reconciler* nil)
 (def ^{:dynamic true :private true} *parent* nil)
 (def ^{:dynamic true :private true} *shared* nil)
@@ -510,6 +543,13 @@
                   (seq? node)    children)]
         (with-meta ret (meta node))))
     root))
+;; https://clojuredocs.org/clojure.zip/zipper
+;; https://clojuredocs.org/clojure.zip
+;; (def zp (query-zip '[{:a [:b :c]} ({:d [:e :f]} {:p 1})]))
+;; (-> zp zip/down zip/right zip/down zip/right zip/down zip/down first) ;;=> :p
+;; (pp (zip/root zp))
+;; (pp (-> zp zip/down first))
+;; (pp (-> zp zip/down zip/node))
 
 (defn- move-to-key
   "Move from the current zipper location to the specified key. loc must be a
@@ -518,8 +558,12 @@
   (loop [loc (zip/down loc)]
     (let [node (zip/node loc)]
       (if (= k (first node))
-        (-> loc zip/down zip/right)
-        (recur (zip/right loc))))))
+        (-> loc zip/down zip/right)     ;return value of key
+        (recur (zip/right loc))))))     ;move to next key on the right
+
+;; (def zp (query-zip '{:a 1 :b 2 :c 3}))
+;; (-> zp zip/down zip/node)
+;; (move-to-key zp :b)                     ;=> [2 {...}]
 
 (defn- query-template
   "Given a query and a path into a query return a zipper focused at the location
@@ -550,6 +594,8 @@
                         (recur (-> loc zip/down zip/down zip/down zip/right) ks)) ;; CALL
                       (recur (zip/right loc) path)))))))]
     (query-template* (query-zip query) path)))
+
+;; (first (query-template [{:a [{:b {:c [:d :e] :f [:g :h]}}]}] [:a :b :f])) ;=> [:g :h]
 
 (defn- replace [template new-query]
   (-> template (zip/replace new-query) zip/root))
@@ -625,6 +671,10 @@
        (recur focus' bound (conj path k)))
      path)))
 
+;; (focus->path [{:foo [{:d ['...]}]}])
+
+;; (util/join? [{:foo [{:d [:e]} {:bar {:baz []}}]}])
+
 ;; =============================================================================
 ;; Query Protocols & Helpers
 
@@ -665,6 +715,8 @@
     (get params (var->keyword expr) expr)
     expr))
 
+;; Recursively replaces all istances of variables ('?some-var) in query with the
+;; value in params
 (defn- bind-query [query params]
   (let [qm (meta query)
         tr (map #(bind-query % params))
@@ -677,6 +729,9 @@
       (and qm #?(:clj  (instance? clojure.lang.IObj ret)
                  :cljs (satisfies? IMeta ret)))
       (with-meta qm))))
+
+;; (bind-query ['?v `(~'?v) (list '?v) {'?v '?v} (list {'?v ['?v '?v]} {'?v '?v})] {:v :foo})
+;; => [:foo (:foo) (:foo) {:foo :foo} ({:foo [:foo :foo]} {:foo :foo})]
 
 (declare component? get-reconciler props class-path get-indexer path react-type)
 
@@ -1508,7 +1563,7 @@
              _    (when-let [l (:logger cfg)]
                     (glog/info l
                       (str (when ref (str (pr-str ref) " "))
-                        "transacted '" tx ", " (pr-str id))))])
+                        "transac '" tx ", " (pr-str id))))])
         v    ((:parser cfg) env tx)
         snds (gather-sends env tx (:remotes cfg))
         xs   (cond-> []

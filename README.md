@@ -1,3 +1,5 @@
+Added comments
+
 # Om
 
 A [ClojureScript](http://github.com/clojure/clojurescript) interface

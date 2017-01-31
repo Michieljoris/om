@@ -49,7 +49,7 @@
   (comp
     ;; remove possible artifacts of Figwheel compilation
     (sift :include #{#"^devcards\/(out\/|main.js)"} :invert true)
-    (serve :port 3449)
+    (serve :port 3449 :dir "target")
     (watch)
     (cljs-repl)
     (reload)
