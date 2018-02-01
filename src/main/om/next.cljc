@@ -214,9 +214,11 @@
    :defaults
    `{~'isMounted
      ([this#]
-       (boolean
-         (goog.object/getValueByKeys this#
-           "_reactInternalInstance" "_renderedComponent")))
+      (boolean
+        (or (some-> this# .-_reactInternalFiber .-stateNode)
+            ;; Pre React 16 support. Remove when we don't wish to support
+            ;; React < 16 anymore - Antonio
+            (some-> this# .-_reactInternalInstance .-_renderedComponent))))
      ~'shouldComponentUpdate
      ([this# next-props# next-state#]
       (let [next-children# (. next-props# -children)
@@ -1371,13 +1373,13 @@
      #?(:cljs
         (when-let [l (:logger cfg)]
           (glog/info l
-            (str (when-let [ident (when (implements? Ident c)
-                                    (ident c (props c)))]
-                   (str (pr-str ident) " "))
-              (when (reconciler? x) "reconciler ")
-              (when query "changed query '" query ", ")
-              (when params "changed params " params " ")
-              (pr-str id)))))
+            (cond-> (str (when-let [ident (when (implements? Ident c)
+                                            (ident c (props c)))]
+                           (str (pr-str ident) " ")))
+                    (reconciler? x) (str "reconciler ")
+                    query (str "changed query '" query ", ")
+                    params (str "changed params " params " ")
+                    true (str (pr-str id))))))
      (swap! st update-in [:om.next/queries (or c root)] merge
        (merge (when query {:query query}) (when params {:params params})))
      (when (and (not (nil? c)) (nil? reads))

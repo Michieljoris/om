@@ -20,8 +20,9 @@
 ;(union? (list {:a {:b :c}}))
 ;; => true
 
-(defn join? [x]
+(defn join?
   #?(:cljs {:tag boolean})
+  [x]
   (let [x (if (seq? x) (first x) x)]
     (map? x)))
 ;;(join? {:a :b}) ;; => true
