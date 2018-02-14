@@ -105,3 +105,15 @@
     (watch)
     (speak)
     (test :exit? false)))
+
+(task-options!
+ pom {:project 'om-next-local
+      :version "1.0.0-beta2"
+      :description ""})
+
+
+(deftask install-local []
+  (comp
+   (pom)
+   (jar)
+   (install)))
