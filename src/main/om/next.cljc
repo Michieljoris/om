@@ -18,10 +18,27 @@
             [om.next.protocols :as p]
             [cljs.analyzer :as ana]
             [cljs.analyzer.api :as ana-api]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [clojure.pprint :refer [pprint]])
   #?(:clj  (:import [java.io Writer])
      :cljs (:import [goog.debug Console])))
 
+
+(def pp pprint)
+;; =============================================================================
+
+;;Defui
+;;Utilities
+;;Query Protocols & Helpers
+;;Reconciler API
+;;React bridging
+;;Transactions
+;;Parser
+;;Indexer
+;;Reconciler
+
+
+;; defui
 (defn collect-statics [dt]
   (letfn [(split-on-static [forms]
             (split-with (complement '#{static}) forms))
@@ -47,7 +64,17 @@
             (recur nil dt' statics)))
         {:dt dt' :statics statics}))))
 
-(defn- validate-statics [dt]
+
+;; (collect-statics '(defui Bla
+;;                     static field :a 1
+;;                     static IQuery
+;;                     (query [this] :foo)
+;;                     static Ident 
+;;                     Object
+;;                     (render [this] :bar)))
+;; => {:dt [defui Bla Object (render [this] :bar)], :statics {:fields {:a 1}, :protocols [IQuery (query [this] :foo) Ident]}}
+
+(defn- validate-statics [dt];
   (when-let [invalid (some #{"Ident" "IQuery" "IQueryParams"}
                        (map #(-> % str (str/split #"/") last)
                          (filter symbol? dt)))]
@@ -240,6 +267,9 @@
          (when-not (nil? indexer#)
            (om.next.protocols/drop-component! indexer# this#))))}})
 
+;; Takes dt seq and 'reshapes' existing react methods to om-next versions.
+;; Basically prepending code to passed in code. If react method isn't defined,
+;; adds default for a number of methods, see reshape method above..
 (defn reshape [dt {:keys [reshape defaults]}]
   (letfn [(reshape* [x]
             (if (and (sequential? x)
@@ -392,6 +422,12 @@
                         :component-name ~(str name)}
                   ~class-methods))))))))
 
+;; This returns a piece of code that if executed defines a constructor function
+;; named name, and some more code to set prototype to make the function a
+;; constructor for a React component
+;; for specify! see:
+;; http://davedellacosta.com/cljs-protocols
+;; http://dev.clojure.org/display/design/specify+i.e.+reify+for+instances
 (defn defui*
   ([name form] (defui* name form nil))
   ([name forms env]
@@ -450,7 +486,12 @@
 (defmacro defui [name & forms]
   (if (boolean (:ns &env))
     (defui* name forms &env)
-    #?(:clj (defui*-clj name forms))))
+    ;; #?(:clj (defui*-clj name forms))
+    ))
+
+;; (clojure.pprint/pprint (defui* Bla '(static Ident (ident [this] :foo)
+;;                                             static IQuery (query [this] bar)
+;;                                             static field foo "aaaaaaaaaaaaaaaaaaaaaaaaaa")))
 
 (defmacro ui
   [& forms]
@@ -472,6 +513,8 @@
                  (str " (in function: `" ~fn-name "`)"))
                ": " ~message)))))))
 
+;; Kind of an assert that logs error on condition = false, and uses google console
+;; logger or configured logger. Logs fn where invariant fails if it can.
 (defmacro invariant
   [condition message]
   (when (boolean (:ns &env))
@@ -489,6 +532,7 @@
 ;; =============================================================================
 ;; CLJS
 
+;; If goog.DEBUG==true logs to console, and calls possible om.next logger
 #?(:cljs
    (defonce *logger*
      (when ^boolean goog.DEBUG
@@ -500,6 +544,8 @@
 
 (def ^:private roots (atom {}))
 (def ^{:dynamic true} *raf* nil)
+
+;; Rebound in render of component, see defui.
 (def ^{:dynamic true :private true} *reconciler* nil)
 (def ^{:dynamic true :private true} *parent* nil)
 (def ^{:dynamic true :private true} *shared* nil)
@@ -542,6 +588,13 @@
                   (seq? node)    children)]
         (with-meta ret (meta node))))
     root))
+;; https://clojuredocs.org/clojure.zip/zipper
+;; https://clojuredocs.org/clojure.zip
+;; (def zp (query-zip '[{:a [:b :c]} ({:d [:e :f]} {:p 1})]))
+;; (-> zp zip/down zip/right zip/down zip/right zip/down zip/down first) ;;=> :p
+;; (pp (zip/root zp))
+;; (pp (-> zp zip/down first))
+;; (pp (-> zp zip/down zip/node))
 
 (defn- move-to-key
   "Move from the current zipper location to the specified key. loc must be a
@@ -550,8 +603,12 @@
   (loop [loc (zip/down loc)]
     (let [node (zip/node loc)]
       (if (= k (first node))
-        (-> loc zip/down zip/right)
-        (recur (zip/right loc))))))
+        (-> loc zip/down zip/right)     ;return value of key
+        (recur (zip/right loc))))))     ;move to next key on the right
+
+;; (def zp (query-zip '{:a 1 :b 2 :c 3}))
+;; (-> zp zip/down zip/node)
+;; (move-to-key zp :b)                     ;=> [2 {...}]
 
 (defn- query-template
   "Given a query and a path into a query return a zipper focused at the location
@@ -582,6 +639,8 @@
                         (recur (-> loc zip/down zip/down zip/down zip/right) ks)) ;; CALL
                       (recur (zip/right loc) path)))))))]
     (query-template* (query-zip query) path)))
+
+;; (first (query-template [{:a [{:b {:c [:d :e] :f [:g :h]}}]}] [:a :b :f])) ;=> [:g :h]
 
 (defn- replace [template new-query]
   (-> template (zip/replace new-query) zip/root))
@@ -657,6 +716,10 @@
        (recur focus' bound (conj path k)))
      path)))
 
+;; (focus->path [{:foo [{:d ['...]}]}])
+
+;; (util/join? [{:foo [{:d [:e]} {:bar {:baz []}}]}])
+
 ;; =============================================================================
 ;; Query Protocols & Helpers
 
@@ -697,6 +760,8 @@
     (get params (var->keyword expr) expr)
     expr))
 
+;; Recursively replaces all istances of variables ('?some-var) in query with the
+;; value in params
 (defn- bind-query [query params]
   (let [qm (meta query)
         tr (map #(bind-query % params))
@@ -712,6 +777,9 @@
       (and qm #?(:clj  (instance? clojure.lang.IObj ret)
                  :cljs (satisfies? IMeta ret)))
       (with-meta qm))))
+
+;; (bind-query ['?v `(~'?v) (list '?v) {'?v '?v} (list {'?v ['?v '?v]} {'?v '?v})] {:v :foo})
+;; => [:foo (:foo) (:foo) {:foo :foo} ({:foo [:foo :foo]} {:foo :foo})]
 
 (declare component? get-reconciler props class-path get-indexer path react-type)
 
@@ -744,10 +812,10 @@
 (defn iquery?
   #?(:cljs {:tag boolean})
   [x]
-  #?(:clj  (if (fn? x)
-             (some? (-> x meta :query))
-             (let [class (cond-> x (component? x) class)]
-               (extends? IQuery class)))
+  #?( :clj  (if (fn? x)
+              (some? (-> x meta :query))
+              (let [class (cond-> x (component? x) class)]
+                (extends? IQuery class)))
      :cljs (implements? IQuery x)))
 
 (defn- get-class-or-instance-query
@@ -1246,9 +1314,9 @@
    mapped to the query specific to that remote."
   [{:keys [parser] :as env} q remotes]
   (into {}
-    (comp
-      (map #(vector % (parser env q %)))
-      (filter (fn [[_ v]] (pos? (count v)))))
+    (comp ;;transducer
+      (map #(vector % (parser env q %))) ;;gets called first, sets remote key to returned query for earch remote
+      (filter (fn [[_ v]] (pos? (count v))))) ;;remove remote key if empty query returned for that remote
     remotes))
 
 (defn transform-reads
@@ -1259,14 +1327,14 @@
   [r tx]
   (if (-> r :config :easy-reads)
     (letfn [(with-target [target q]
-             (if-not (nil? target)
-               [(force (first q) target)]
-               q))
-           (add-focused-query [k target tx c]
-             (let [transformed (->> (focus-query (get-query c) [k])
-                                 (with-target target)
-                                 (full-query c))]
-               (into tx (remove (set tx)) transformed)))]
+              (if-not (nil? target)
+                [(force (first q) target)]
+                q))
+            (add-focused-query [k target tx c]
+              (let [transformed (->> (focus-query (get-query c) [k])
+                                     (with-target target)
+                                     (full-query c))]
+                (into tx (remove (set tx)) transformed)))]
      (loop [exprs (seq tx) tx' []]
        (if-not (nil? exprs)
          (let [expr (first exprs)
@@ -1460,6 +1528,7 @@
 (defn- basis-t [reconciler]
   (p/basis-t reconciler))
 
+;;Called if state changes, calls reconcile on reconciler at raf, or like 16ms from now
 #?(:cljs
    (defn- queue-render! [f]
      (cond
@@ -1477,6 +1546,8 @@
        (queue-render! #(p/reconcile! reconciler)))))
 
 (defn schedule-sends! [reconciler]
+  ;;Only calls send! on reconciler if :sends-queued is not set in state of reconciler.
+  ;;It sets it before returning true
   (when (p/schedule-sends! reconciler)
     #?(:clj  (p/send! reconciler)
        :cljs (js/setTimeout #(p/send! reconciler) 0))))
@@ -1516,12 +1587,15 @@
   (let [config (if (reconciler? x) (:config x) x)]
     (select-keys config [:state :shared :parser :logger :pathopt])))
 
+;;Ref being an ident
 (defn transact* [r c ref tx]
   (let [cfg  (:config r)
         ref  (if (and c #?(:clj  (satisfies? Ident c)
                            :cljs (implements? Ident c)) (not ref))
                (ident c (props c))
                ref)
+        ;;env in mutation gets component and reconciler but also ref (ident) of
+        ;;component if it implements Ident, of if passed in directly to transaction with reconciler
         env  (merge
                (to-env cfg)
                {:reconciler r :component c}
@@ -1536,17 +1610,32 @@
                       (str (when ref (str (pr-str ref) " "))
                         "transacted '" tx ", " (pr-str id))))])
         old-state @(:state cfg)
-        v    ((:parser cfg) env tx)
-        snds (gather-sends env tx (:remotes cfg))
-        xs   (cond-> []
+        v    ((:parser cfg) env tx) ;; result for nil target (denormalized tree of data)
+        ;;with mutation-keys and their result maps
+        snds (gather-sends env tx (:remotes cfg)) ;;result map (remote->query) for all remotes
+        ;;xs will be a vector like [c ref]
+        ;;
+        ;;c is not added if it's nil
+        ;;ref is not added if it's nil
+        xs   (cond-> [] 
                (not (nil? c)) (conj c)
                (not (nil? ref)) (conj ref))]
-    (p/queue! r (into xs (remove symbol?) (keys v)))
-    (when-not (empty? snds)
+    (p/queue! r (into xs (remove symbol?) (keys v))) ;;[c ref :exp1  :k2] k1, k2 etc is any key added to tx
+    ;; get added to :queue of reconciler 
+    ;;these keys could have been expressions, or been transformed by
+    ;;transform-reads to more complicated expressions, but after parsing they've
+    ;;been reduced to simple keys again. With as value whatever the parser made
+    ;;of them. Or rather your read and mutate methods did with them. They could be an ident still. 
+    
+    ;;This kicks it all off:
+    (when-not (empty? snds) 
       (doseq [[remote _] snds]
-        (p/queue! r xs remote))
-      (p/queue-sends! r snds)
-      (schedule-sends! r))
+        (p/queue! r xs remote)) ;;  also queue [c ref] for every remote, goes added to {:remote-queue :{remote [..]}} of reconciler
+      
+      (p/queue-sends! r snds) ;;and queue map of remote->query, which is basically used in send! method of reconciler
+      (schedule-sends! r)) ;; calls p/send! on reconciler 
+    ;;which basically directly calls the send function supplied to the reconciler
+    
     (when-let [f (:tx-listen cfg)]
       (let [tx-data (merge env
                       {:old-state old-state
@@ -1576,7 +1665,19 @@
   "Given a reconciler or component run a transaction. tx is a parse expression
    that should include mutations followed by any necessary read. The reads will
    be used to trigger component re-rendering.
+  
+  NOTE: call it with a reconciler iso component and transform-reads won't be called on tx. 
+  NOTE: call it from component that doesn't implement IQuery and transform-reads won't be called on tx
 
+  NOTE: call it from component that does have IQuery implemented,
+  transform-reads is called on tx and you can also intercept
+  transaction from parent component. Like:
+  
+  ITxIntercept  
+   (tx-intercept [this tx] <return some tx>)
+  
+  tx-intercept of parents higher in the hierarchy can override once again. 
+  
    Example:
 
      (om/transact! widget
@@ -1591,11 +1692,11 @@
               (annotate-mutations (get-ident x)))]
      (cond
        (reconciler? x) (transact* x nil nil tx)
-       (not (iquery? x)) (do
+       (not (iquery? x)) (do ;;does not implement IQuery
                            (invariant (some-iquery? x)
-                             (str "transact! should be called on a component"
-                                  "that implements IQuery or has a parent that"
-                                  "implements IQuery"))
+                                      (str "transact! should be called on a component"
+                                           "that implements IQuery or has a parent that"
+                                           "implements IQuery"))
                            (transact* (get-reconciler x) nil nil tx))
        :else (do
                (loop [p (parent x) x x tx tx]
@@ -1604,9 +1705,10 @@
                      (transact* r x nil (transform-reads r tx)))
                    (let [[x' tx] (if #?(:clj  (satisfies? ITxIntercept p)
                                         :cljs (implements? ITxIntercept p))
-                                   [p (tx-intercept p tx)]
+                                     [p (tx-intercept p tx)]
                                    [x tx])]
                      (recur (parent p) x' tx))))))))
+  ;;Apparently you can call transact! also with an extra arg, ref. 
   ([r ref tx]
    (transact* r nil ref tx)))
 
@@ -1814,7 +1916,8 @@
         (swap! indexes merge
           {:prop->classes     @prop->classes
            :class-path->query @class-path->query}))))
-
+  
+  ;;p/IIndexer
   (index-component! [_ c]
     (swap! indexes
       (fn [indexes]
@@ -1843,6 +1946,7 @@
               ident (update-in [:ref->components ident] (fnil conj #{}) c))
             indexes)))))
 
+  ;;p/IIndexer
   (drop-component! [_ c]
     (swap! indexes
       (fn [indexes]
@@ -1861,6 +1965,7 @@
               ident (update-in [:ref->components ident] disj c))
             indexes)))))
 
+  ;;p/IIndexer
   (key->components [_ k]
     (let [indexes @indexes]
       (if (component? k)
@@ -2340,13 +2445,16 @@
       (merge-idents config idts query)
       ((:merge-tree config) res'))))
 
-(defn default-merge [reconciler state res query]
+;;Res is delta, so whatever needs to merged with app-state
+(defn default-merge [reconciler state res query] 
   {:keys    (into [] (remove symbol?) (keys res))
    :next    (merge-novelty! reconciler state res query)
    :tempids (->> (filter (comp symbol? first) res)
               (map (comp :tempids second))
               (reduce merge {}))})
 
+;;Called by send cb function (in all its forms). Can also be called by app at
+;;any time
 (defn merge!
   "Merge a state delta into the application state. Affected components managed
    by the reconciler will re-render."
@@ -2357,7 +2465,7 @@
   ([reconciler delta query remote]
    (let [config (:config reconciler)
          state (:state config)
-         merge* (:merge config)
+         merge* (:merge config) ;;default-merge
          {:keys [keys next tempids]} (merge* reconciler @state delta query)]
      (when (nil? remote)
        (p/queue! reconciler keys))
@@ -2370,27 +2478,34 @@
          next)))))
 
 (defrecord Reconciler [config state]
-  #?(:clj  clojure.lang.IDeref
+  #?(;; :clj  clojure.lang.IDeref
      :cljs IDeref)
-  #?(:clj  (deref [this] @(:state config))
+  #?(;; :clj  (deref [this] @(:state config))
      :cljs (-deref [_] @(:state config)))
 
   p/IReconciler
+  ;;Returns t of reconciler. Incremented each time app state is changed
   (basis-t [_] (:t @state))
 
+  
+  ;; p/IReconciler
   (add-root! [this root-class target options]
     (let [ret   (atom nil)
-          rctor (factory root-class)
+          rctor (factory root-class) ;;root constructor
           guid  #?(:clj  (java.util.UUID/randomUUID)
                    :cljs (random-uuid))]
+     ;; Populate index 
       (when (iquery? root-class)
         (p/index-root (:indexer config) root-class))
+      ;; Normalize app-state if needed
       (when (and (:normalize config)
                  (not (:normalized @state)))
         (let [new-state (tree->db root-class @(:state config))
               refs      (meta new-state)]
           (reset! (:state config) (merge new-state refs))
           (swap! state assoc :normalized true)))
+      ;; Actual react rendering by passing hydrated data (react props) to root
+      ;; factory, and then calling reactDom.render on it and target
       (let [renderf (fn [data]
                       (binding [*reconciler* this
                                 *shared*     (merge
@@ -2399,7 +2514,8 @@
                                                  ((:shared-fn config) data)))
                                 *instrument* (:instrument config)]
                         (let [c (cond
-                                  #?@(:cljs [(not (nil? target)) ((:root-render config) (rctor data) target)])
+                                  #?@(:cljs [(not (nil? target))
+                                             ((:root-render config) (rctor data) target)])
                                   (nil? @ret) (rctor data)
                                   :else (when-let [c' @ret]
                                           #?(:clj (do
@@ -2410,6 +2526,8 @@
                           (when (and (nil? @ret) (not (nil? c)))
                             (swap! state assoc :root c)
                             (reset! ret c)))))
+            ;;Gets query for root class, calls parser on it, this returns
+            ;;hydrated data tree which gets passed to renderf
             parsef  (fn []
                       (let [sel (get-query (or @ret root-class))]
                         (assert (or (nil? sel) (vector? sel))
@@ -2420,6 +2538,7 @@
                             (when-not (empty? v)
                               (renderf v)))
                           (renderf @(:state config)))))]
+        ;;Update reconciler state
         (swap! state merge
           {:target target :render parsef :root root-class
            :remove (fn []
@@ -2430,23 +2549,31 @@
                          (dissoc :remove)))
                      (when-not (nil? target)
                        ((:root-unmount config) target)))})
+       ;;Whenever app-state changes, bump basis-t, and call schedule-render!,
+       ;;which calls queue-render!, which calls reconcile on reconciler ater
+       ;;16ms
         (add-watch (:state config) (or target guid)
           (fn [_ _ _ _]
             (swap! state update-in [:t] inc)
             #?(:cljs
                (if-not (iquery? root-class)
                  (queue-render! parsef)
+                 ;;Also calls queue-render! if :queued flag of reconciler isn't set
                  (schedule-render! this)))))
+        ;;Do initial render
         (parsef)
+        ;;Do any pending remote calls
         (when-let [sel (get-query (or (and target @ret) root-class))]
           (let [env  (to-env config)
                 snds (gather-sends env sel (:remotes config))]
             (when-not (empty? snds)
               (when-let [send (:send config)]
-                (send snds
+                (send snds ;;map of remote expressions keyed by remote target
                   (fn send-cb
                     ([resp]
+                     ;;Merge new data
                      (merge! this resp nil)
+                     ;;Render with hydrated data
                      (renderf ((:parser config) env sel)))
                     ([resp query]
                      (merge! this resp query)
@@ -2458,10 +2585,13 @@
                      (p/reconcile! this remote))))))))
         @ret)))
 
+  ;; p/IReconciler
   (remove-root! [_ target]
     (when-let [remove (:remove @state)]
       (remove)))
 
+  ;; p/IReconciler
+  ;;Only used by set-query
   (reindex! [this]
     (let [root (get @state :root)]
       (when (iquery? root)
@@ -2469,17 +2599,22 @@
               c (first (get-in @indexer [:class->components root]))]
           (p/index-root indexer (or c root))))))
 
-  (queue! [this ks]
+  ;; p/IReconciler
+  (queue! [this ks] ;;ks can also include component and ref
     (p/queue! this ks nil))
+  ;; p/IReconciler
   (queue! [_ ks remote]
     (if-not (nil? remote)
       (swap! state update-in [:remote-queue remote] into ks)
       (swap! state update-in [:queue] into ks)))
 
-  (queue-sends! [_ sends]
+  ;; p/IReconciler
+  (queue-sends! [_ sends] ;; sends is map of remote to query
     (swap! state update-in [:queued-sends]
       (:merge-sends config) sends))
 
+  ;; p/IReconciler
+  ;;If queued flag is not set it is set, and true is returned, otherwise false.
   (schedule-render! [_]
     (if-not (:queued @state)
       (do
@@ -2487,6 +2622,9 @@
         true)
       false))
 
+  ;; p/IReconciler
+  ;;If sends-queued flag is not set it is set, and true is returned, otherwise
+  ;;false.
   (schedule-sends! [_]
     (if-not (:sends-queued @state)
       (do
@@ -2494,6 +2632,7 @@
         true)
       false))
 
+  ;; p/IReconciler
   (reconcile! [this]
     (p/reconcile! this nil))
   ;; TODO: need to reindex roots after reconcilation
@@ -2522,8 +2661,7 @@
                    (let [computed   (get-computed (props c))
                          next-raw-props (ui->props env c)
                          next-props     (om.next/computed next-raw-props computed)]
-                     (when (and
-                             (some? (.-componentWillReceiveProps c))
+                     (when (and (exists? (.-componentWillReceiveProps c))
                              (iquery? root)
                              props-change?)
                        (let [next-props (if (nil? next-props)
@@ -2550,7 +2688,10 @@
                                  (merge-pending-props! p)
                                  (recur (parent p)))))))))))))))))
 
+  ;;IReconciler
   (send! [this]
+    ;;Just forwards queued-sends as returned from parser for all remotes to send
+    ;;fn supplied to reconciler. Then calls merge! on value passed to cb
     (let [sends (:queued-sends @state)]
       (when-not (empty? sends)
         (swap! state
@@ -2789,11 +2930,13 @@
   (let [idxr   (indexer)
         norm?  #?(:clj  (instance? clojure.lang.Atom state)
                   :cljs (satisfies? IAtom state))
+        state-is-atom? norm? ;;NOTE
         state' (if norm? state (atom state))
         logger (if (contains? config :logger)
                  (:logger config)
                  #?(:cljs *logger*))
         ret    (Reconciler.
+                ;;:config key of reconciler
                  {:state state' :shared shared :shared-fn shared-fn
                   :parser parser :indexer idxr
                   :ui->props ui->props
@@ -2801,7 +2944,12 @@
                   :merge merge :merge-tree merge-tree :merge-ident merge-ident
                   :prune-tree prune-tree
                   :optimize optimize
-                  :normalize (or (not norm?) normalize)
+                  ;; If state is not an atom it is not expected to be
+                  ;; normalized, if it is an atom and it isn't normalized you
+                  ;; can  set normalize to true to normalize it
+                  
+                  ;; :normalize (or (not norm?) normalize) 
+                  :normalize (or (not state-is-atom?) normalize) 
                   :history #?(:clj  []
                               :cljs (c/cache history))
                   :root-render root-render :root-unmount root-unmount
@@ -2809,12 +2957,22 @@
                   :migrate migrate :id-key id-key
                   :instrument instrument :tx-listen tx-listen
                   :easy-reads easy-reads}
+                 ;;:state key (an atom) of reconciler
                  (atom {:queue []
-                        :remote-queue {}
-                        :queued false :queued-sends {}
-                        :sends-queued false
-                        :target nil :root nil :render nil :remove nil
-                        :t 0 :normalized norm?}))]
+                        :remote-queue {} ;;{:remote (..)
+                                         ;; :remote2 (..)}
+                        :queued-sends {} ;;{:foo (..) :bar (..)}
+                        
+                        :queued false  ;;schedule-render
+                        :sends-queued false ;;schedule-sends
+                        
+                        :target nil ;;dom node
+                        :root nil ;; Component Root Class
+                        :render nil
+                        :remove nil ;;is a fn
+                        :t 0
+                        :normalized norm? ;;state-is-atom?
+                        }))]
     ret))
 
 (defn reconciler?
@@ -2827,20 +2985,20 @@
 
 (defn app-state
   "Return the reconciler's application state atom. Useful when the reconciler
-   was initialized via denormalized data."
+   was initialized via denormalized data. From config as passed when constructing reconciler"
   [reconciler]
   {:pre [(reconciler? reconciler)]}
   (-> reconciler :config :state))
 
 (defn app-root
-  "Return the application's root component."
+  "Return the application's root component from the reconciler's state."
   [reconciler]
   {:pre [(reconciler? reconciler)]}
   (get @(:state reconciler) :root))
 
 (defn force-root-render!
   "Force a re-render of the root. Not recommended for anything except
-   recomputing :shared."
+   recomputing :shared. Calls render method in reconciler's state"
   [reconciler]
   {:pre [(reconciler? reconciler)]}
   ((get @(:state reconciler) :render)))
@@ -2884,3 +3042,10 @@
     (force expr :remote))
   ([expr target]
     (with-meta (list 'quote expr) {:target target})))
+
+
+
+;; (force {:a [:b]} :foo)
+;; (meta (force {:a [:b]} :foo))
+
+;; (meta ^{:foo :bar}{:a [:b]})

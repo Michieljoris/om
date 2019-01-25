@@ -274,13 +274,14 @@
                                (do
                                  (assert read "Parse read attempted but no :read function supplied")
                                  (read env dispatch-key params)))]
-                   (if-not (nil? target)
+                   (if-not (nil? target) ;;if targeting remote then just return query (from possibly ast)
                      (let [ast' (get res target)]
                        (cond-> ret
                          (true? ast') (conj expr)
                          (map? ast') (conj (ast->expr ast'))))
                      (if-not (or call? (nil? (:target ast)) (contains? res :value))
-                       ret
+                    ;; if (and (not call?) (some? (:target ast)) (not (contains? res :value)))
+                       ret ;;if it's a read for a remote that didn't return a :value ????
                        (let [error   (atom nil)
                              mut-ret (atom nil)]
                          (when (and call? (not (nil? (:action res))))
@@ -301,7 +302,53 @@
                                                   value)
                              @mut-ret (assoc-in [key :result] @mut-ret)
                              @error (assoc key {:om.next/error @error}))))))))]
+
          (cond-> (reduce step (if (nil? target) {} []) query)
            (and (nil? target) (not elide-paths?)) (path-meta path query)))))))
 
-(defn dispatch [_ k _] k)
+;;Mutation: Should return map if target is nil. If it has an action key with a fn for value it
+;;gets called. In result map key (symbol) of mutation is set a map with
+;;{:result [return value of action fn]}, if exception occured key (symbol) is set to
+;;{:om.next/error [error]} Mutation return map can also have a value key. But
+;;the value of this key has to be a map. For instance {:keys [...]}
+;; So
+;; {:action (fn []....)
+;;  :value {:keys [...]}
+;;  :remote1 [true or ast]
+;;  :remote2 [true or ast]
+;; }
+;; But each key is optional.
+;; Result of parser is for mutation something like
+;; '{some-mutation {:keys [...]}
+;;   another-mutation {:keys [...] :result [<return value of action fn>]}
+;;   failed-mutation {:om.next/error error}}
+;; or if no value map , no action fn returned, then mutation key isn't added to result map
+;; If parser called with some target result map looks like:
+;;[(some-mutation [:some-query] {:some :param})]
+
+;; So result is a vector with original expression unmodified if remote key was
+;; true. If an ast it gets changed to query first. So then you can have any
+;; query added to the vector you like
+;; So read method should return something like:
+;; {:value {:some :value}
+;;  :remote1 true
+;;  :remote2 [:some :query]}
+
+;;Return map of parser should then include a key (of the expression that was
+;;read) holding that value.
+
+;; All keys is optional.
+
+;;Read: value of :value key of return map of read method is set to to the key of
+;;the read in the result map of the parser if it's called with a nil target.
+;;If called with a remote for target then value of remote key will be added to
+;;return vector. The original expression for the read if remote key value was
+;;true, or the expression from the ast if that was returned.
+
+;;This goes for for every expressions in the vector (query) given to the parser
+
+;;So this parser only looks at top level expressions. The elements of the
+;;vector. But every read and mutate gets the parser as part of the environment,
+;;which can be used to read subqueries.
+
+;; (defn dispatch [_ k _] k)

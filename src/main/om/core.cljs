@@ -1,7 +1,6 @@
 (ns om.core
   (:require-macros om.core)
-  (:require [cljsjs.react]
-            [om.dom :as dom :include-macros true]
+  (:require [om.dom :as dom :include-macros true]
             [goog.object :as gobj]
             [goog.dom :as gdom]
             [goog.dom.dataset :as gdomdata])

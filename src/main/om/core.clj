@@ -9,4 +9,3 @@
      om.core/IRender
      (~'render [this#]
        ~@body)))
-
