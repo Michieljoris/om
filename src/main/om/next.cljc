@@ -310,62 +310,64 @@
                      ~(with-meta `(fn ~(#'cljs.core/adapt-proto-params type meth)) (meta form)))))
            meths)))))
 
-;; #?(:clj (intern 'cljs.core 'add-proto-methods* add-proto-methods*))
+#?(:clj (intern 'cljs.core 'add-proto-methods* add-proto-methods*))
 
-;; #?(:clj
-;;    (defn- proto-assign-impls [env resolve type-sym type [p sigs]]
-;;      (#'cljs.core/warn-and-update-protocol p type env)
-;;      (let [psym      (resolve p)
-;;            pprefix   (#'cljs.core/protocol-prefix psym)
-;;            skip-flag (set (-> type-sym meta :skip-protocol-flag))
-;;            static?   (-> p meta :static)
-;;            type-sym  (cond-> type-sym
-;;                        static? (vary-meta assoc :static true))
-;;            emit-static (when static?
-;;                          `(~'js* "/** @nocollapse */"))]
-;;        (if (= p 'Object)
-;;          (#'cljs.core/add-obj-methods type type-sym sigs)
-;;          (concat
-;;            (when-not (skip-flag psym)
-;;              (let [{:keys [major minor qualifier]} cljs.util/*clojurescript-version*]
-;;                (if (and (== major 1) (== minor 9) (>= qualifier 293))
-;;                 [`(do
-;;                     ~emit-static
-;;                     (set! ~(#'cljs.core/extend-prefix type-sym pprefix) cljs.core/PROTOCOL_SENTINEL))]
-;;                 [`(do
-;;                     ~emit-static
-;;                     (set! ~(#'cljs.core/extend-prefix type-sym pprefix) true))])))
-;;            (mapcat
-;;              (fn [sig]
-;;                (if (= psym 'cljs.core/IFn)
-;;                  (#'cljs.core/add-ifn-methods type type-sym sig)
-;;                  (#'cljs.core/add-proto-methods* pprefix type type-sym sig)))
-;;              sigs))))))
+#?(:clj
+   (defn- proto-assign-impls [env resolve type-sym type [p sigs]]
+     (#'cljs.core/warn-and-update-protocol p type env)
+     (let [psym      (resolve p)
+           pprefix   (#'cljs.core/protocol-prefix psym)
+           skip-flag (set (-> type-sym meta :skip-protocol-flag))
+           static?   (-> p meta :static)
+           type-sym  (cond-> type-sym
+                       static? (vary-meta assoc :static true))
+           emit-static (when static?
+                         `(~'js* "/** @nocollapse */"))]
+       (if (= p 'Object)
+         (#'cljs.core/add-obj-methods type type-sym sigs)
+         (concat
+           (when-not (skip-flag psym)
+             (let [{:keys [major minor qualifier]} cljs.util/*clojurescript-version*]
+               (if (or (> major 1)
+                       (and (== major 1) (> minor 9))
+                       (and (== major 1) (== minor 9) (>= qualifier 293)))
+                [`(do
+                    ~emit-static
+                    (set! ~(#'cljs.core/extend-prefix type-sym pprefix) cljs.core/PROTOCOL_SENTINEL))]
+                [`(do
+                    ~emit-static
+                    (set! ~(#'cljs.core/extend-prefix type-sym pprefix) true))])))
+           (mapcat
+             (fn [sig]
+               (if (= psym 'cljs.core/IFn)
+                 (#'cljs.core/add-ifn-methods type type-sym sig)
+                 (#'cljs.core/add-proto-methods* pprefix type type-sym sig)))
+             sigs))))))
 
-;; #?(:clj (intern 'cljs.core 'proto-assign-impls proto-assign-impls))
+#?(:clj (intern 'cljs.core 'proto-assign-impls proto-assign-impls))
 
-;; #?(:clj (defn- extract-static-methods [protocols]
-;;           (letfn [(add-protocol-method [existing-methods method]
-;;                     (let [nm              (first method)
-;;                           new-arity       (rest method)
-;;                           k               (keyword nm)
-;;                           existing-method (get existing-methods k)]
-;;                       (if existing-method
-;;                         (let [single-arity?    (vector? (second existing-method))
-;;                               existing-arities (if single-arity?
-;;                                                  (list (rest existing-method))
-;;                                                  (rest existing-method))]
-;;                           (assoc existing-methods k (conj existing-arities new-arity 'fn)))
-;;                         (assoc existing-methods k (list 'fn new-arity)))))]
-;;             (when-not (empty? protocols)
-;;               (let [result (->> protocols
-;;                              (filter #(not (symbol? %)))
-;;                              (reduce
-;;                                (fn [r impl] (add-protocol-method r impl))
-;;                                {}))]
-;;                 (if (contains? result :params)
-;;                   result
-;;                   (assoc result :params '(fn [this]))))))))
+#?(:clj (defn- extract-static-methods [protocols]
+          (letfn [(add-protocol-method [existing-methods method]
+                    (let [nm              (first method)
+                          new-arity       (rest method)
+                          k               (keyword nm)
+                          existing-method (get existing-methods k)]
+                      (if existing-method
+                        (let [single-arity?    (vector? (second existing-method))
+                              existing-arities (if single-arity?
+                                                 (list (rest existing-method))
+                                                 (rest existing-method))]
+                          (assoc existing-methods k (conj existing-arities new-arity 'fn)))
+                        (assoc existing-methods k (list 'fn new-arity)))))]
+            (when-not (empty? protocols)
+              (let [result (->> protocols
+                             (filter #(not (symbol? %)))
+                             (reduce
+                               (fn [r impl] (add-protocol-method r impl))
+                               {}))]
+                (if (contains? result :params)
+                  result
+                  (assoc result :params '(fn [this]))))))))
 
 #?(:clj
    (defn defui*-clj [name forms]
@@ -764,6 +766,9 @@
         tr (map #(bind-query % params))
         ret (cond
               (seq? query) (apply list (into [] tr query))
+              #?@(:cljs [(and (exists? cljs.core/IMapEntry)
+                              (implements? ^:cljs.analyzer/no-resolve cljs.core/IMapEntry query))
+                         (into [] tr query)])
               #?@(:clj [(instance? clojure.lang.IMapEntry query) (into [] tr query)])
               (coll? query) (into (empty query) tr query)
               :else (replace-var query params))]
@@ -2655,7 +2660,8 @@
                    (let [computed   (get-computed (props c))
                          next-raw-props (ui->props env c)
                          next-props     (om.next/computed next-raw-props computed)]
-                     (when (and (exists? (.-componentWillReceiveProps c))
+                     (when (and
+                             (some? (.-componentWillReceiveProps c))
                              (iquery? root)
                              props-change?)
                        (let [next-props (if (nil? next-props)
